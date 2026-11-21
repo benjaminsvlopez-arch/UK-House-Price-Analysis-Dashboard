@@ -1,0 +1,1733 @@
+---
+title: "UK House Price Analysis Dashboard"
+output:
+  html_document:
+    theme: flatly
+    toc: false
+    code_folding: hide
+    self_contained: true
+runtime: shiny
+resource_files:
+- "data/HM Land Registry - Average price by property type.csv"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+
+```{r dashboard-styling, echo=FALSE}
+shiny::tags$style(HTML("
+  html, body {
+    width: 100%;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow-x: hidden;
+  }
+
+  .container-fluid {
+    width: 100% !important;
+    max-width: 100% !important;
+    padding-left: 15px !important;
+    padding-right: 15px !important;
+    padding-bottom: 0 !important;
+    margin-bottom: 0 !important;
+  }
+
+  .main-container {
+    width: 100% !important;
+    max-width: 100% !important;
+    padding-bottom: 0 !important;
+    margin-bottom: 0 !important;
+  }
+
+  .tab-content {
+    width: 100%;
+  }
+
+  .plotly.html-widget {
+    width: 100% !important;
+  }
+
+  .shiny-output-container {
+    margin-bottom: 10px;
+  }
+  
+  .shiny-frame {
+  height: 1600px !important;
+  min-height: 1600px !important;
+  }
+"))
+```
+
+
+```{r}
+
+# ============================================================
+# UK HOUSE PRICE ANALYSIS DASHBOARD
+# HM Land Registry - Average Price by Property Type
+# ============================================================
+
+library(shiny)
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(scales)
+library(plotly)
+
+# ------------------------------------------------------------
+# 1. LOAD AND PREPARE DATA
+# ------------------------------------------------------------
+
+file_path <- file.path(
+  "data",
+  "HM Land Registry - Average price by property type.csv"
+)
+
+house_prices_raw <- read.csv(
+  file_path,
+  stringsAsFactors = FALSE,
+  check.names = TRUE
+)
+
+
+house_prices <- house_prices_raw %>%
+  clean_names() %>%
+  mutate(
+    date = as.Date(date),
+    region_name = str_squish(region_name)
+  )
+
+property_types <- c(
+  "Detached",
+  "Semi Detached",
+  "Terraced",
+  "Flat"
+)
+
+price_columns <- c(
+  "detached_average_price",
+  "semi_detached_average_price",
+  "terraced_average_price",
+  "flat_average_price"
+)
+
+change_columns <- c(
+  "detached_monthly_change",
+  "semi_detached_monthly_change",
+  "terraced_monthly_change",
+  "flat_monthly_change"
+)
+
+prices_long <- house_prices %>%
+  pivot_longer(
+    cols = all_of(price_columns),
+    names_to = "property_type",
+    values_to = "average_price"
+  ) %>%
+  mutate(
+    property_type = str_remove(
+      property_type,
+      "_average_price"
+    ) %>%
+      str_replace_all("_", " ") %>%
+      str_to_title(),
+    average_price = as.numeric(average_price)
+  ) %>%
+  filter(!is.na(date))
+
+changes_long <- house_prices %>%
+  pivot_longer(
+    cols = all_of(change_columns),
+    names_to = "property_type",
+    values_to = "monthly_change"
+  ) %>%
+  mutate(
+    property_type = str_remove(
+      property_type,
+      "_monthly_change"
+    ) %>%
+      str_replace_all("_", " ") %>%
+      str_to_title(),
+    monthly_change = as.numeric(monthly_change)
+  ) %>%
+  filter(!is.na(date))
+
+newcastle_name <- "Newcastle upon Tyne"
+
+date_min <- min(house_prices$date, na.rm = TRUE)
+date_max <- max(house_prices$date, na.rm = TRUE)
+
+regions <- sort(unique(na.omit(prices_long$region_name)))
+
+property_colours <- c(
+  "Detached" = "#1f77b4",
+  "Semi Detached" = "#ff7f0e",
+  "Terraced" = "#2ca02c",
+  "Flat" = "#d62728"
+)
+
+# ------------------------------------------------------------
+# 2. HELPER FUNCTIONS
+# ------------------------------------------------------------
+
+format_price <- function(x) {
+  scales::label_currency(
+    prefix = "£",
+    suffix = "",
+    big.mark = ",",
+    accuracy = 1
+  )(x)
+}
+
+format_date_uk <- function(x) {
+  format(as.Date(x), "%d/%m/%Y")
+}
+
+format_percentage <- function(x, accuracy = 2) {
+  paste0(
+    scales::number(
+      x,
+      accuracy = accuracy,
+      big.mark = ","
+    ),
+    "%"
+  )
+}
+
+# Common date-axis formatting.
+# Exact dates remain available in chart hover information.
+date_axis <- function() {
+  scale_x_date(
+    date_breaks = "5 years",
+    date_labels = "%Y",
+    expand = expansion(mult = c(0.01, 0.02))
+  )
+}
+
+# Consistent Plotly layout for date-based charts.
+date_plot_layout <- function(p) {
+  p %>%
+    layout(
+      xaxis = list(
+        tickangle = -45,
+        automargin = TRUE
+      ),
+      legend = list(
+        orientation = "h",
+        y = -0.25
+      ),
+      margin = list(b = 100)
+    )
+}
+
+# Calculate growth using the first and last available prices.
+calculate_region_growth <- function(data) {
+
+  data %>%
+    filter(!is.na(average_price)) %>%
+    arrange(date) %>%
+    group_by(region_name, property_type) %>%
+    summarise(
+      starting_price = first(average_price),
+      latest_price = last(average_price),
+      starting_date = first(date),
+      latest_date = last(date),
+      absolute_change = latest_price - starting_price,
+      percentage_increase = if_else(
+        starting_price > 0,
+        (latest_price / starting_price - 1) * 100,
+        NA_real_
+      ),
+      .groups = "drop"
+    )
+}
+
+# ------------------------------------------------------------
+# 3. USER INTERFACE
+# ------------------------------------------------------------
+
+ui <- fluidPage(
+
+  titlePanel("UK House Price Analysis Dashboard"),
+
+  sidebarLayout(
+
+    sidebarPanel(
+      width = 3,
+
+      h4("Dashboard filters"),
+
+      dateRangeInput(
+        "date_range",
+        "Date range",
+        start = date_min,
+        end = date_max,
+        min = date_min,
+        max = date_max,
+        format = "dd/mm/yyyy"
+      ),
+
+      selectizeInput(
+        "property_types",
+        "Property types",
+        choices = property_types,
+        selected = property_types,
+        multiple = TRUE
+      ),
+
+      selectizeInput(
+        "regions",
+        "Regions for comparison",
+        choices = regions,
+        selected = newcastle_name,
+        multiple = TRUE,
+        options = list(
+          placeholder = "Select regions",
+          maxOptions = 500
+        )
+      ),
+
+      checkboxInput(
+        "show_average",
+        "Show average reference lines",
+        value = TRUE
+      ),
+
+      checkboxInput(
+        "show_newcastle",
+        "Highlight Newcastle in regional charts",
+        value = TRUE
+      ),
+
+      hr(),
+
+      helpText(
+        "The date filter applies to price, change and regional growth analyses."
+      ),
+
+      helpText(
+        "Average reference lines are recalculated using the currently selected date range."
+      )
+    ),
+
+    mainPanel(
+      width = 9,
+
+      tabsetPanel(
+
+        # ====================================================
+        # TAB 1: OVERVIEW
+        # ====================================================
+
+        tabPanel(
+          "Overview",
+
+          br(),
+
+          h3("Newcastle upon Tyne"),
+
+          fluidRow(
+            column(
+              4,
+              wellPanel(
+                h5("Latest average price"),
+                textOutput("latest_price")
+              )
+            ),
+            column(
+              4,
+              wellPanel(
+                h5("Latest monthly change"),
+                textOutput("latest_monthly_change")
+              )
+            ),
+            column(
+              4,
+              wellPanel(
+                h5("Regional growth ranking"),
+                textOutput("newcastle_rank")
+              )
+            )
+          ),
+
+          h4("Monthly property prices"),
+          plotlyOutput("overview_prices", height = "500px"),
+
+          h4("Yearly average property prices"),
+          plotlyOutput("overview_yearly_prices", height = "500px"),
+
+          hr(),
+
+          h4("Key observations"),
+          tableOutput("overview_insights"),
+
+          hr(),
+
+          p(
+            "Interpretation: These charts describe historical price movements. ",
+            "They do not establish why prices changed or demonstrate that one ",
+            "factor caused another."
+          )
+        ),
+
+        # ====================================================
+        # TAB 2: NEWCASTLE PRICES
+        # ====================================================
+
+        tabPanel(
+          "Newcastle Prices",
+
+          br(),
+
+          h3("Monthly average property prices"),
+          p(
+            "Solid lines show observed monthly average prices. ",
+            "Dashed lines show the average price over the selected period ",
+            "for each property type."
+          ),
+          plotlyOutput("newcastle_price_plot", height = "550px"),
+
+          hr(),
+
+          h3("Yearly average property prices"),
+          p(
+            "Each point represents the average of the available monthly ",
+            "observations in that calendar year. Dashed lines show the ",
+            "average across the selected period."
+          ),
+          plotlyOutput("newcastle_yearly_price_plot", height = "550px"),
+
+          hr(),
+
+          h3("Price summary"),
+          tableOutput("price_summary")
+        ),
+
+        # ====================================================
+        # TAB 3: MONTHLY CHANGES
+        # ====================================================
+
+        tabPanel(
+          "Monthly Changes",
+
+          br(),
+
+          h3("Month-on-month percentage changes"),
+          p(
+            "The zero line represents no monthly change. ",
+            "Dashed coloured lines show the average monthly change ",
+            "for each property type across the selected period."
+          ),
+          plotlyOutput("monthly_change_plot", height = "550px"),
+
+          hr(),
+
+          h3("Largest monthly increases"),
+          tableOutput("biggest_increases"),
+
+          hr(),
+
+          h3("Largest monthly decreases"),
+          tableOutput("biggest_decreases"),
+
+          hr(),
+
+          h3("Average monthly changes by property type"),
+          tableOutput("monthly_change_summary")
+        ),
+
+        # ====================================================
+        # TAB 4: YEARLY CHANGES
+        # ====================================================
+
+        tabPanel(
+          "Yearly Changes",
+
+          br(),
+
+          h3("Average monthly percentage change by year"),
+          p(
+            "Each annual value is the mean of the available monthly ",
+            "percentage changes in that calendar year. Dashed lines ",
+            "show the overall monthly average across the selected period."
+          ),
+          plotlyOutput("yearly_change_plot", height = "550px"),
+
+          hr(),
+
+          h3("Overall average monthly change"),
+          tableOutput("average_change_table")
+        ),
+
+        # ====================================================
+        # TAB 5: REGIONAL COMPARISON
+        # ====================================================
+
+        tabPanel(
+          "Regional Comparison",
+
+          br(),
+
+          h3("House price trends by region"),
+          p(
+            "Coloured lines represent selected regions. ",
+            "The black dashed line represents the average price ",
+            "across the selected regions for each month and property type."
+          ),
+          plotlyOutput("regional_price_plot", height = "600px"),
+
+          hr(),
+
+          h3("Regions with the highest and lowest growth"),
+          p(
+            "Growth is calculated between the first and last available ",
+            "prices within the selected date range."
+          ),
+          plotlyOutput("regional_ranking_plot", height = "700px"),
+
+          hr(),
+
+          h3("Newcastle's regional ranking"),
+          tableOutput("newcastle_ranking_table"),
+
+          hr(),
+
+          h3("Regional growth data"),
+          tableOutput("regional_growth_table")
+        ),
+
+        # ====================================================
+        # TAB 6: GROWTH DISTRIBUTIONS
+        # ====================================================
+
+        tabPanel(
+          "Growth Distributions",
+
+          br(),
+
+          h3("Overall regional growth distribution"),
+          p(
+            "The solid vertical line shows the mean regional growth. ",
+            "The dashed vertical line shows the median. ",
+            "The red line identifies Newcastle."
+          ),
+          plotlyOutput("overall_distribution_plot", height = "500px"),
+
+          hr(),
+
+          h3("Growth distribution by property type"),
+          p(
+            "Each panel compares regional growth for one property type. ",
+            "Newcastle is highlighted in red."
+          ),
+          plotlyOutput("property_distribution_plot", height = "650px"),
+
+          hr(),
+
+          h3("Newcastle's position by property type"),
+          tableOutput("newcastle_positions_table")
+        ),
+
+        # ====================================================
+        # TAB 7: DATA EXPLORER
+        # ====================================================
+
+        tabPanel(
+          "Data Explorer",
+
+          br(),
+
+          h3("Filtered property price data"),
+          tableOutput("data_preview"),
+
+          hr(),
+
+          h3("Dataset information"),
+          verbatimTextOutput("dataset_summary"),
+
+          hr(),
+
+          p(
+            "The dataset contains historical average prices and monthly ",
+            "percentage changes. It does not, by itself, identify the ",
+            "causes of changes in house prices."
+          )
+        )
+      )
+    )
+  )
+)
+
+# ------------------------------------------------------------
+# 4. SERVER
+# ------------------------------------------------------------
+
+server <- function(input, output, session) {
+
+  # ==========================================================
+  # FILTERED DATASETS
+  # ==========================================================
+
+  filtered_prices <- reactive({
+
+    req(input$date_range)
+
+    prices_long %>%
+      filter(
+        date >= input$date_range[1],
+        date <= input$date_range[2],
+        property_type %in% input$property_types
+      )
+  })
+
+  filtered_changes <- reactive({
+
+    req(input$date_range)
+
+    changes_long %>%
+      filter(
+        date >= input$date_range[1],
+        date <= input$date_range[2],
+        property_type %in% input$property_types
+      )
+  })
+
+  newcastle_prices <- reactive({
+
+    filtered_prices() %>%
+      filter(region_name == newcastle_name)
+  })
+
+  newcastle_changes <- reactive({
+
+    filtered_changes() %>%
+      filter(region_name == newcastle_name)
+  })
+
+  # ==========================================================
+  # YEARLY PRICE CALCULATIONS
+  # ==========================================================
+
+  yearly_prices <- reactive({
+
+    newcastle_prices() %>%
+      filter(!is.na(average_price)) %>%
+      mutate(year = year(date)) %>%
+      group_by(year, property_type) %>%
+      summarise(
+        yearly_average_price = mean(average_price),
+        .groups = "drop"
+      )
+  })
+
+  average_prices <- reactive({
+
+    newcastle_prices() %>%
+      filter(!is.na(average_price)) %>%
+      group_by(property_type) %>%
+      summarise(
+        overall_average = mean(average_price),
+        overall_median = median(average_price),
+        .groups = "drop"
+      )
+  })
+
+  # ==========================================================
+  # YEARLY CHANGE CALCULATIONS
+  # ==========================================================
+
+  yearly_changes <- reactive({
+
+    newcastle_changes() %>%
+      mutate(year = year(date)) %>%
+      group_by(year, property_type) %>%
+      summarise(
+        average_monthly_change = if (
+          all(is.na(monthly_change))
+        ) {
+          NA_real_
+        } else {
+          mean(monthly_change, na.rm = TRUE)
+        },
+        .groups = "drop"
+      )
+  })
+
+  average_changes <- reactive({
+
+    newcastle_changes() %>%
+      filter(!is.na(monthly_change)) %>%
+      group_by(property_type) %>%
+      summarise(
+        overall_average = mean(monthly_change),
+        overall_median = median(monthly_change),
+        .groups = "drop"
+      )
+  })
+
+  # ==========================================================
+  # REGIONAL GROWTH CALCULATIONS
+  # ==========================================================
+
+  region_growth <- reactive({
+
+    calculate_region_growth(filtered_prices())
+  })
+
+  region_ranking <- reactive({
+
+    region_growth() %>%
+      group_by(region_name) %>%
+      summarise(
+        average_growth = if (
+          all(is.na(percentage_increase))
+        ) {
+          NA_real_
+        } else {
+          mean(percentage_increase, na.rm = TRUE)
+        },
+        .groups = "drop"
+      ) %>%
+      filter(!is.na(average_growth)) %>%
+      arrange(desc(average_growth))
+  })
+
+  newcastle_growth <- reactive({
+
+    region_ranking() %>%
+      filter(region_name == newcastle_name)
+  })
+
+  newcastle_positions <- reactive({
+
+    growth <- region_growth()
+
+    distribution_stats <- growth %>%
+      group_by(property_type) %>%
+      summarise(
+        mean_growth = mean(percentage_increase, na.rm = TRUE),
+        sd_growth = sd(percentage_increase, na.rm = TRUE),
+        median_growth = median(percentage_increase, na.rm = TRUE),
+        .groups = "drop"
+      )
+
+    growth %>%
+      filter(region_name == newcastle_name) %>%
+      left_join(distribution_stats, by = "property_type") %>%
+      mutate(
+        z_score = if_else(
+          !is.na(sd_growth) & sd_growth > 0,
+          (percentage_increase - mean_growth) / sd_growth,
+          NA_real_
+        )
+      )
+  })
+
+  # ==========================================================
+  # OVERVIEW KPI VALUES
+  # ==========================================================
+
+  output$latest_price <- renderText({
+
+    data <- newcastle_prices() %>%
+      filter(!is.na(average_price)) %>%
+      arrange(desc(date))
+
+    req(nrow(data) > 0)
+
+    format_price(data$average_price[1])
+  })
+
+  output$latest_monthly_change <- renderText({
+
+    data <- newcastle_changes() %>%
+      filter(!is.na(monthly_change)) %>%
+      arrange(desc(date))
+
+    req(nrow(data) > 0)
+
+    paste0(
+      round(data$monthly_change[1], 2),
+      "%"
+    )
+  })
+
+  output$newcastle_rank <- renderText({
+
+    ranking <- region_ranking()
+
+    rank <- which(ranking$region_name == newcastle_name)
+
+    req(length(rank) > 0)
+
+    paste0(
+      rank,
+      " of ",
+      nrow(ranking),
+      " regions"
+    )
+  })
+
+  # ==========================================================
+  # OVERVIEW INSIGHTS
+  # ==========================================================
+
+  output$overview_insights <- renderTable({
+
+    data <- newcastle_prices() %>%
+      filter(!is.na(average_price)) %>%
+      arrange(property_type, date) %>%
+      group_by(property_type) %>%
+      summarise(
+        observations = n(),
+        first_date = first(date),
+        latest_date = last(date),
+        first_price = first(average_price),
+        latest_price = last(average_price),
+        mean_price = mean(average_price),
+        median_price = median(average_price),
+        change = latest_price - first_price,
+        percentage_change = if_else(
+          first_price > 0,
+          (latest_price / first_price - 1) * 100,
+          NA_real_
+        ),
+        .groups = "drop"
+      ) %>%
+      transmute(
+        Property_type = property_type,
+        Observations = observations,
+        Period = paste(
+          format_date_uk(first_date),
+          "to",
+          format_date_uk(latest_date)
+        ),
+        Latest_price = format_price(latest_price),
+        Period_average = format_price(mean_price),
+        Period_median = format_price(median_price),
+        Absolute_change = format_price(change),
+        Percentage_change = format_percentage(percentage_change)
+      )
+
+    data
+  })
+
+  # ==========================================================
+  # OVERVIEW: MONTHLY PRICES
+  # ==========================================================
+
+  output$overview_prices <- renderPlotly({
+
+    data <- newcastle_prices() %>%
+      filter(!is.na(average_price)) %>%
+      arrange(property_type, date)
+
+    averages <- data %>%
+      group_by(property_type) %>%
+      summarise(
+        period_average = mean(average_price),
+        .groups = "drop"
+      )
+
+    req(nrow(data) > 0)
+
+    p <- ggplot(
+      data,
+      aes(
+        x = date,
+        y = average_price,
+        colour = property_type,
+        group = property_type,
+        text = paste0(
+          "Date: ", format_date_uk(date),
+          "<br>Property type: ", property_type,
+          "<br>Average price: ", format_price(average_price)
+        )
+      )
+    ) +
+      geom_line(linewidth = 0.9, na.rm = TRUE) +
+      geom_point(size = 0.6, alpha = 0.6) +
+      scale_colour_manual(values = property_colours) +
+      date_axis() +
+      scale_y_continuous(
+        labels = label_currency(prefix = "£", big.mark = ",")
+      ) +
+      labs(
+        title = "Newcastle Monthly Property Prices",
+        subtitle = "Dashed lines show the mean price over the selected period",
+        x = "Year",
+        y = "Average property price",
+        colour = "Property type"
+      ) +
+      theme_minimal()
+
+    if (isTRUE(input$show_average)) {
+      p <- p +
+        geom_hline(
+          data = averages,
+          aes(
+            yintercept = period_average,
+            colour = property_type
+          ),
+          linetype = "dashed",
+          linewidth = 0.9,
+          inherit.aes = FALSE,
+          show.legend = FALSE
+        )
+    }
+
+    date_plot_layout(
+      ggplotly(p, tooltip = "text")
+    )
+  })
+
+  # ==========================================================
+  # OVERVIEW: YEARLY PRICES
+  # ==========================================================
+
+  output$overview_yearly_prices <- renderPlotly({
+
+    data <- yearly_prices()
+    averages <- average_prices()
+
+    req(nrow(data) > 0)
+
+    p <- ggplot(
+      data,
+      aes(
+        x = year,
+        y = yearly_average_price,
+        colour = property_type,
+        group = property_type,
+        text = paste0(
+          "Year: ", year,
+          "<br>Property type: ", property_type,
+          "<br>Average price: ", format_price(yearly_average_price)
+        )
+      )
+    ) +
+      geom_line(linewidth = 0.9) +
+      geom_point(size = 1.5) +
+      scale_colour_manual(values = property_colours) +
+      scale_y_continuous(
+        labels = label_currency(prefix = "£", big.mark = ",")
+      ) +
+      labs(
+        title = "Yearly Average Property Prices",
+        subtitle = "Dashed lines show the mean price over the selected period",
+        x = "Year",
+        y = "Average property price",
+        colour = "Property type"
+      ) +
+      theme_minimal()
+
+    if (isTRUE(input$show_average)) {
+      p <- p +
+        geom_hline(
+          data = averages,
+          aes(
+            yintercept = overall_average,
+            colour = property_type
+          ),
+          linetype = "dashed",
+          linewidth = 0.9,
+          inherit.aes = FALSE,
+          show.legend = FALSE
+        )
+    }
+
+    ggplotly(p, tooltip = "text")
+  })
+
+  # ==========================================================
+  # NEWCASTLE PRICES: MONTHLY
+  # ==========================================================
+
+  output$newcastle_price_plot <- renderPlotly({
+
+    data <- newcastle_prices() %>%
+      filter(!is.na(average_price)) %>%
+      arrange(property_type, date)
+
+    averages <- data %>%
+      group_by(property_type) %>%
+      summarise(
+        period_average = mean(average_price),
+        .groups = "drop"
+      )
+
+    req(nrow(data) > 0)
+
+    p <- ggplot(
+      data,
+      aes(
+        x = date,
+        y = average_price,
+        colour = property_type,
+        group = property_type,
+        text = paste0(
+          "Date: ", format_date_uk(date),
+          "<br>Property type: ", property_type,
+          "<br>Average price: ", format_price(average_price)
+        )
+      )
+    ) +
+      geom_line(linewidth = 0.9, na.rm = TRUE) +
+      geom_point(size = 0.6, alpha = 0.6) +
+      scale_colour_manual(values = property_colours) +
+      date_axis() +
+      scale_y_continuous(
+        labels = label_currency(prefix = "£", big.mark = ",")
+      ) +
+      labs(
+        title = "Monthly Average Property Prices in Newcastle",
+        subtitle = "Dashed lines show the mean price for each property type",
+        x = "Year",
+        y = "Average property price",
+        colour = "Property type"
+      ) +
+      theme_minimal()
+
+    if (isTRUE(input$show_average)) {
+      p <- p +
+        geom_hline(
+          data = averages,
+          aes(
+            yintercept = period_average,
+            colour = property_type
+          ),
+          linetype = "dashed",
+          linewidth = 0.9,
+          inherit.aes = FALSE,
+          show.legend = FALSE
+        )
+    }
+
+    date_plot_layout(
+      ggplotly(p, tooltip = "text")
+    )
+  })
+
+  # ==========================================================
+  # NEWCASTLE PRICES: YEARLY
+  # ==========================================================
+
+  output$newcastle_yearly_price_plot <- renderPlotly({
+
+    data <- yearly_prices()
+    averages <- average_prices()
+
+    req(nrow(data) > 0)
+
+    p <- ggplot(
+      data,
+      aes(
+        x = year,
+        y = yearly_average_price,
+        colour = property_type,
+        group = property_type,
+        text = paste0(
+          "Year: ", year,
+          "<br>Property type: ", property_type,
+          "<br>Yearly average price: ",
+          format_price(yearly_average_price)
+        )
+      )
+    ) +
+      geom_line(linewidth = 0.9) +
+      geom_point(size = 1.5) +
+      facet_wrap(~property_type, scales = "free_y") +
+      scale_y_continuous(
+        labels = label_currency(prefix = "£", big.mark = ",")
+      ) +
+      labs(
+        title = "Yearly Average Property Prices",
+        subtitle = "Dashed line shows the overall mean for each property type",
+        x = "Year",
+        y = "Average property price"
+      ) +
+      theme_minimal()
+
+    if (isTRUE(input$show_average)) {
+      p <- p +
+        geom_hline(
+          data = averages,
+          aes(yintercept = overall_average),
+          colour = "#d62728",
+          linetype = "dashed",
+          linewidth = 0.9,
+          inherit.aes = FALSE
+        )
+    }
+
+    ggplotly(p, tooltip = "text")
+  })
+
+  # ==========================================================
+  # NEWCASTLE PRICE SUMMARY
+  # ==========================================================
+
+  output$price_summary <- renderTable({
+
+    newcastle_prices() %>%
+      filter(!is.na(average_price)) %>%
+      arrange(date) %>%
+      group_by(property_type) %>%
+      summarise(
+        First_date = format_date_uk(first(date)),
+        Latest_date = format_date_uk(last(date)),
+        First_price = format_price(first(average_price)),
+        Latest_price = format_price(last(average_price)),
+        Average_price = format_price(mean(average_price)),
+        Median_price = format_price(median(average_price)),
+        Minimum_price = format_price(min(average_price)),
+        Maximum_price = format_price(max(average_price)),
+        Absolute_change = format_price(
+          last(average_price) - first(average_price)
+        ),
+        Percentage_change = format_percentage(
+          (last(average_price) / first(average_price) - 1) * 100
+        ),
+        .groups = "drop"
+      )
+  })
+
+  # ==========================================================
+  # MONTHLY CHANGES
+  # ==========================================================
+
+  output$monthly_change_plot <- renderPlotly({
+
+    data <- newcastle_changes() %>%
+      filter(!is.na(monthly_change)) %>%
+      arrange(property_type, date)
+
+    averages <- data %>%
+      group_by(property_type) %>%
+      summarise(
+        period_average = mean(monthly_change),
+        .groups = "drop"
+      )
+
+    req(nrow(data) > 0)
+
+    p <- ggplot(
+      data,
+      aes(
+        x = date,
+        y = monthly_change,
+        colour = property_type,
+        group = property_type,
+        text = paste0(
+          "Date: ", format_date_uk(date),
+          "<br>Property type: ", property_type,
+          "<br>Monthly change: ",
+          round(monthly_change, 2), "%"
+        )
+      )
+    ) +
+      geom_line(linewidth = 0.8, na.rm = TRUE) +
+      geom_point(size = 0.6, alpha = 0.6) +
+      geom_hline(
+        yintercept = 0,
+        colour = "black",
+        linetype = "dotted",
+        linewidth = 0.8
+      ) +
+      scale_colour_manual(values = property_colours) +
+      date_axis() +
+      scale_y_continuous(
+        labels = label_number(suffix = "%")
+      ) +
+      labs(
+        title = "Month-on-Month Percentage Changes in Newcastle",
+        subtitle = "Dashed coloured lines show the selected-period mean; zero indicates no change",
+        x = "Year",
+        y = "Monthly percentage change",
+        colour = "Property type"
+      ) +
+      theme_minimal()
+
+    if (isTRUE(input$show_average)) {
+      p <- p +
+        geom_hline(
+          data = averages,
+          aes(
+            yintercept = period_average,
+            colour = property_type
+          ),
+          linetype = "dashed",
+          linewidth = 0.9,
+          inherit.aes = FALSE,
+          show.legend = FALSE
+        )
+    }
+
+    date_plot_layout(
+      ggplotly(p, tooltip = "text") %>%
+        layout(hovermode = "x unified")
+    )
+  })
+
+  # ==========================================================
+  # BIGGEST MONTHLY INCREASES
+  # ==========================================================
+
+  output$biggest_increases <- renderTable({
+
+    newcastle_changes() %>%
+      filter(!is.na(monthly_change)) %>%
+      group_by(property_type) %>%
+      slice_max(
+        order_by = monthly_change,
+        n = 10,
+        with_ties = FALSE
+      ) %>%
+      ungroup() %>%
+      arrange(property_type, desc(monthly_change)) %>%
+      transmute(
+        Property_type = property_type,
+        Date = format_date_uk(date),
+        Monthly_change = format_percentage(monthly_change)
+      )
+  })
+
+  # ==========================================================
+  # BIGGEST MONTHLY DECREASES
+  # ==========================================================
+
+  output$biggest_decreases <- renderTable({
+
+    newcastle_changes() %>%
+      filter(!is.na(monthly_change)) %>%
+      group_by(property_type) %>%
+      slice_min(
+        order_by = monthly_change,
+        n = 10,
+        with_ties = FALSE
+      ) %>%
+      ungroup() %>%
+      arrange(property_type, monthly_change) %>%
+      transmute(
+        Property_type = property_type,
+        Date = format_date_uk(date),
+        Monthly_change = format_percentage(monthly_change)
+      )
+  })
+
+  # ==========================================================
+  # MONTHLY CHANGE SUMMARY
+  # ==========================================================
+
+  output$monthly_change_summary <- renderTable({
+
+    newcastle_changes() %>%
+      filter(!is.na(monthly_change)) %>%
+      group_by(property_type) %>%
+      summarise(
+        Observations = n(),
+        Average_monthly_change = format_percentage(
+          mean(monthly_change)
+        ),
+        Median_monthly_change = format_percentage(
+          median(monthly_change)
+        ),
+        Largest_increase = format_percentage(
+          max(monthly_change)
+        ),
+        Largest_decrease = format_percentage(
+          min(monthly_change)
+        ),
+        Positive_months = sum(monthly_change > 0),
+        Negative_months = sum(monthly_change < 0),
+        Unchanged_months = sum(monthly_change == 0),
+        .groups = "drop"
+      )
+  })
+
+  # ==========================================================
+  # YEARLY CHANGES
+  # ==========================================================
+
+  output$yearly_change_plot <- renderPlotly({
+
+    data <- yearly_changes() %>%
+      arrange(property_type, year)
+
+    averages <- average_changes()
+
+    req(nrow(data) > 0)
+
+    p <- ggplot(
+      data,
+      aes(
+        x = year,
+        y = average_monthly_change,
+        colour = property_type,
+        group = property_type,
+        text = paste0(
+          "Year: ", year,
+          "<br>Property type: ", property_type,
+          "<br>Average monthly change: ",
+          round(average_monthly_change, 2), "%"
+        )
+      )
+    ) +
+      geom_line(linewidth = 0.9, na.rm = TRUE) +
+      geom_point(size = 1.5, na.rm = TRUE) +
+      geom_hline(
+        yintercept = 0,
+        colour = "black",
+        linetype = "dotted"
+      ) +
+      scale_colour_manual(values = property_colours) +
+      scale_y_continuous(
+        labels = label_number(suffix = "%")
+      ) +
+      labs(
+        title = "Average Monthly House Price Changes by Year",
+        subtitle = "Dashed coloured lines show the overall monthly mean",
+        x = "Year",
+        y = "Average monthly percentage change",
+        colour = "Property type"
+      ) +
+      theme_minimal()
+
+    if (isTRUE(input$show_average)) {
+      p <- p +
+        geom_hline(
+          data = averages,
+          aes(
+            yintercept = overall_average,
+            colour = property_type
+          ),
+          linetype = "dashed",
+          linewidth = 0.9,
+          inherit.aes = FALSE,
+          show.legend = FALSE
+        )
+    }
+
+    ggplotly(p, tooltip = "text")
+  })
+
+  output$average_change_table <- renderTable({
+
+    average_changes() %>%
+      arrange(desc(overall_average)) %>%
+      transmute(
+        Property_type = property_type,
+        Average_monthly_change = format_percentage(overall_average),
+        Median_monthly_change = format_percentage(overall_median)
+      )
+  })
+
+  # ==========================================================
+  # REGIONAL PRICE COMPARISON
+  # ==========================================================
+
+  output$regional_price_plot <- renderPlotly({
+
+    data <- filtered_prices() %>%
+      filter(
+        region_name %in% input$regions,
+        !is.na(average_price)
+      ) %>%
+      arrange(region_name, property_type, date)
+
+    req(nrow(data) > 0)
+
+    regional_average <- data %>%
+      group_by(date, property_type) %>%
+      summarise(
+        regional_mean = mean(average_price),
+        .groups = "drop"
+      )
+
+    p <- ggplot(
+      data,
+      aes(
+        x = date,
+        y = average_price,
+        colour = region_name,
+        group = interaction(region_name, property_type),
+        text = paste0(
+          "Region: ", region_name,
+          "<br>Date: ", format_date_uk(date),
+          "<br>Property type: ", property_type,
+          "<br>Average price: ", format_price(average_price)
+        )
+      )
+    ) +
+      geom_line(alpha = 0.8, linewidth = 0.7) +
+      facet_wrap(~property_type, scales = "free_y") +
+      date_axis() +
+      scale_y_continuous(
+        labels = label_currency(prefix = "£", big.mark = ",")
+      ) +
+      labs(
+        title = "Average House Prices by Region",
+        x = "Year",
+        y = "Average property price",
+        colour = "Region"
+      ) +
+      theme_minimal() +
+      theme(legend.position = "bottom")
+
+    # Black dashed line: mean across the selected regions.
+    p <- p +
+      geom_line(
+        data = regional_average,
+        aes(
+          x = date,
+          y = regional_mean,
+          group = property_type
+        ),
+        inherit.aes = FALSE,
+        colour = "black",
+        linetype = "dashed",
+        linewidth = 1
+      )
+
+    date_plot_layout(
+      ggplotly(p, tooltip = "text")
+    )
+  })
+
+  # ==========================================================
+  # REGIONAL GROWTH RANKINGS
+  # ==========================================================
+
+  output$regional_ranking_plot <- renderPlotly({
+
+    ranking <- region_ranking()
+
+    req(nrow(ranking) > 0)
+
+    top_15 <- ranking %>%
+      slice_max(
+        order_by = average_growth,
+        n = 15,
+        with_ties = FALSE
+      ) %>%
+      mutate(group = "15 highest increases")
+
+    bottom_15 <- ranking %>%
+      slice_min(
+        order_by = average_growth,
+        n = 15,
+        with_ties = FALSE
+      ) %>%
+      mutate(group = "15 lowest increases")
+
+    comparison <- bind_rows(top_15, bottom_15) %>%
+      distinct(region_name, .keep_all = TRUE) %>%
+      mutate(
+        region_label = if_else(
+          region_name == newcastle_name & isTRUE(input$show_newcastle),
+          paste0(region_name, " (Newcastle)"),
+          region_name
+        ),
+        is_newcastle = region_name == newcastle_name
+      )
+
+    p <- ggplot(
+      comparison,
+      aes(
+        x = reorder(region_label, average_growth),
+        y = average_growth,
+        fill = group,
+        text = paste0(
+          "Region: ", region_name,
+          "<br>Average growth: ",
+          format_percentage(average_growth)
+        )
+      )
+    ) +
+      geom_col() +
+      coord_flip() +
+      facet_wrap(~group, scales = "free_y") +
+      scale_y_continuous(
+        labels = label_number(suffix = "%")
+      ) +
+      labs(
+        title = "Regions with the Highest and Lowest House Price Growth",
+        subtitle = "Growth is measured between the first and last available observations",
+        x = NULL,
+        y = "Average percentage increase"
+      ) +
+      theme_minimal() +
+      theme(legend.position = "none")
+
+    ggplotly(p, tooltip = "text")
+  })
+
+  # ==========================================================
+  # NEWCASTLE RANKING TABLE
+  # ==========================================================
+
+  output$newcastle_ranking_table <- renderTable({
+
+    ranking <- region_ranking() %>%
+      mutate(
+        rank = min_rank(desc(average_growth)),
+        total_regions = n()
+      )
+
+    ranking %>%
+      filter(region_name == newcastle_name) %>%
+      transmute(
+        Rank = rank,
+        Total_regions = total_regions,
+        Region = region_name,
+        Average_growth = format_percentage(average_growth)
+      )
+  })
+
+  output$regional_growth_table <- renderTable({
+
+    ranking <- region_ranking()
+
+    ranking %>%
+      mutate(rank = row_number()) %>%
+      filter(
+        region_name == newcastle_name |
+          region_name %in% c(
+            head(ranking$region_name, 15),
+            tail(ranking$region_name, 15)
+          )
+      ) %>%
+      transmute(
+        Rank = rank,
+        Region = region_name,
+        Average_growth = format_percentage(average_growth)
+      ) %>%
+      arrange(Rank)
+  })
+
+  # ==========================================================
+  # OVERALL GROWTH DISTRIBUTION
+  # ==========================================================
+
+  output$overall_distribution_plot <- renderPlotly({
+
+    ranking <- region_ranking()
+
+    req(nrow(ranking) > 1)
+
+    mean_growth <- mean(ranking$average_growth, na.rm = TRUE)
+    median_growth <- median(ranking$average_growth, na.rm = TRUE)
+
+    newcastle_value <- ranking %>%
+      filter(region_name == newcastle_name) %>%
+      pull(average_growth)
+
+    p <- ggplot(
+      ranking,
+      aes(
+        x = average_growth,
+        text = paste0(
+          "Region: ", region_name,
+          "<br>Growth: ", format_percentage(average_growth)
+        )
+      )
+    ) +
+      geom_histogram(
+        aes(y = after_stat(density)),
+        bins = 30,
+        fill = "lightgrey",
+        colour = "white"
+      ) +
+      geom_vline(
+        xintercept = mean_growth,
+        colour = "black",
+        linewidth = 1
+      ) +
+      geom_vline(
+        xintercept = median_growth,
+        colour = "blue",
+        linewidth = 1,
+        linetype = "dashed"
+      ) +
+      labs(
+        title = "Regional House Price Growth Distribution",
+        subtitle = paste0(
+          "Mean: ", format_percentage(mean_growth),
+          " | Median: ", format_percentage(median_growth)
+        ),
+        x = "House price growth (%)",
+        y = "Density"
+      ) +
+      theme_minimal()
+
+    if (length(newcastle_value) > 0) {
+      p <- p +
+        geom_vline(
+          xintercept = newcastle_value[1],
+          colour = "red",
+          linewidth = 1.2,
+          linetype = "dotdash"
+        )
+    }
+
+    ggplotly(p, tooltip = "text")
+  })
+
+  # ==========================================================
+  # PROPERTY-TYPE GROWTH DISTRIBUTIONS
+  # ==========================================================
+
+  output$property_distribution_plot <- renderPlotly({
+
+    growth <- region_growth() %>%
+      filter(!is.na(percentage_increase))
+
+    positions <- newcastle_positions()
+
+    req(nrow(growth) > 0)
+
+    distribution_stats <- growth %>%
+      group_by(property_type) %>%
+      summarise(
+        mean_growth = mean(percentage_increase),
+        median_growth = median(percentage_increase),
+        .groups = "drop"
+      )
+
+    p <- ggplot(
+      growth,
+      aes(
+        x = percentage_increase,
+        text = paste0(
+          "Region: ", region_name,
+          "<br>Property type: ", property_type,
+          "<br>Growth: ", format_percentage(percentage_increase)
+        )
+      )
+    ) +
+      geom_histogram(
+        aes(y = after_stat(density)),
+        bins = 25,
+        fill = "grey80",
+        colour = "white"
+      ) +
+      facet_wrap(~property_type, scales = "free") +
+      geom_vline(
+        data = distribution_stats,
+        aes(xintercept = mean_growth),
+        colour = "black",
+        linewidth = 0.9,
+        inherit.aes = FALSE
+      ) +
+      geom_vline(
+        data = distribution_stats,
+        aes(xintercept = median_growth),
+        colour = "blue",
+        linewidth = 0.9,
+        linetype = "dashed",
+        inherit.aes = FALSE
+      ) +
+      labs(
+        title = "House Price Growth Distribution by Property Type",
+        subtitle = "Black line = mean; blue dashed line = median; red line = Newcastle",
+        x = "Percentage growth",
+        y = "Density"
+      ) +
+      theme_minimal()
+
+    if (nrow(positions) > 0) {
+      p <- p +
+        geom_vline(
+          data = positions,
+          aes(xintercept = percentage_increase),
+          colour = "red",
+          linetype = "dotdash",
+          linewidth = 1,
+          inherit.aes = FALSE
+        )
+    }
+
+    ggplotly(p, tooltip = "text")
+  })
+
+  # ==========================================================
+  # NEWCASTLE PROPERTY-TYPE POSITIONS
+  # ==========================================================
+
+  output$newcastle_positions_table <- renderTable({
+
+    newcastle_positions() %>%
+      transmute(
+        Property_type = property_type,
+        Newcastle_growth = format_percentage(percentage_increase),
+        Regional_mean = format_percentage(mean_growth),
+        Regional_median = format_percentage(median_growth),
+        Z_score = round(z_score, 2)
+      )
+  })
+
+  # ==========================================================
+  # DATA EXPLORER
+  # ==========================================================
+
+  output$data_preview <- renderTable({
+
+    filtered_prices() %>%
+      arrange(desc(date)) %>%
+      select(
+        date,
+        region_name,
+        property_type,
+        average_price
+      ) %>%
+      head(100) %>%
+      mutate(
+        date = format_date_uk(date),
+        average_price = format_price(average_price)
+      ) %>%
+      rename(
+        Date = date,
+        Region = region_name,
+        Property_type = property_type,
+        Average_price = average_price
+      )
+  })
+
+  output$dataset_summary <- renderPrint({
+
+    data <- filtered_prices()
+
+    cat("Filtered rows:", nrow(data), "\n")
+    cat("Regions:", n_distinct(data$region_name), "\n")
+    cat("Property types:", n_distinct(data$property_type), "\n")
+
+    if (nrow(data) > 0) {
+      cat(
+        "Date range:",
+        format_date_uk(min(data$date, na.rm = TRUE)),
+        "to",
+        format_date_uk(max(data$date, na.rm = TRUE)),
+        "\n"
+      )
+    }
+
+    cat(
+      "Missing average prices:",
+      sum(is.na(data$average_price)),
+      "\n"
+    )
+  })
+}
+
+# ------------------------------------------------------------
+# 5. RUN THE DASHBOARD
+# ------------------------------------------------------------
+
+shinyApp(ui = ui, server = server)
+
+```
