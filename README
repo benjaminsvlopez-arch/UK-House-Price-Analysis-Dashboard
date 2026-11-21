@@ -1,0 +1,191 @@
+# UK House Price Analysis Dashboard
+
+An interactive R Shiny dashboard exploring UK residential property price trends using official HM Land Registry average house price data.
+
+The dashboard provides historical analysis of property prices, monthly and annual price movements, regional comparisons and distribution analysis, with a particular focus on **Newcastle upon Tyne**.
+
+## Overview
+
+The project uses HM Land Registry data to explore how UK residential property prices have changed over time across different property types and geographical regions.
+
+Users can interact with the dashboard to investigate historical trends, compare regional performance and understand how Newcastle's housing market compares with wider regional patterns.
+
+## Dashboard Features
+
+### 1. Overview
+- Key housing market indicators and summary statistics.
+- Latest available average property prices.
+- Monthly price movements.
+- Newcastle's regional growth ranking.
+- Historical price trends.
+
+### 2. Newcastle Property Prices
+- Historical average prices in Newcastle upon Tyne.
+- Comparisons across detached, semi-detached, terraced and flat properties.
+- Monthly and annual price trends.
+- Average price reference lines.
+- Summary statistics, including mean, median, minimum and maximum prices.
+
+### 3. Monthly Changes
+- Monthly percentage changes in average property prices.
+- Comparisons between property types.
+- Identification of the largest monthly increases and decreases.
+- Average monthly change reference lines.
+- Zero-change reference line.
+
+### 4. Yearly Changes
+- Annual housing price movement analysis.
+- Comparisons of yearly trends across property types.
+- Average change reference lines.
+
+### 5. Regional Comparison
+- Comparison of average property prices across selected UK regions.
+- Regional property price rankings.
+- Comparison of Newcastle against other areas.
+- Regional growth calculations over the selected period.
+
+### 6. Growth Distributions
+- Distribution of regional property price growth.
+- Mean and median reference lines.
+- Newcastle's position within the wider regional distribution.
+
+### 7. Data Explorer
+- Interactive access to the underlying dataset.
+- Dataset previews and summary statistics.
+- Filtering by date, region and property type.
+
+## Property Types
+
+The dashboard analyses four residential property categories:
+
+- Detached
+- Semi-detached
+- Terraced
+- Flats
+
+## Data Source
+
+**HM Land Registry – UK House Price Index / Average Price Data**
+
+The dataset contains historical average property prices and associated monthly and annual changes across UK geographical areas.
+
+Data source: https://www.gov.uk/government/organisations/land-registry
+
+The dataset used in this project covers January 1995 to September 2026.
+
+Please check the source for updates and the latest available observations.
+
+
+## Installation and Setup
+
+### Requirements
+
+- R (version 4.3 or later recommended)
+- RStudio
+- An internet connection for installing packages
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/YOUR-USERNAME/YOUR-REPOSITORY.git
+```
+
+Navigate into the project directory:
+
+```bash
+cd YOUR-REPOSITORY
+```
+
+### 2. Install required R packages
+
+Run the following in RStudio:
+
+```r
+install.packages(c(
+  "shiny",
+  "rmarkdown",
+  "tidyverse",
+  "lubridate",
+  "janitor",
+  "scales",
+  "plotly"
+))
+```
+
+### 3. Check the project structure
+
+The project should be organised as follows:
+
+```text
+UK-House-Price-Analysis-Dashboard/
+│
+├── app.rmd
+│
+├── data/
+│   └── HM Land Registry - Average price by property type.csv
+│
+└── README.md
+```
+
+### 4. Run the dashboard
+
+Open `app.rmd` in RStudio.
+
+Run the document using the **Run Document** button.
+
+Alternatively:
+
+```r
+rmarkdown::run("app.rmd")
+```
+
+## Analytical Methodology
+
+The dashboard uses descriptive statistical analysis to explore historical housing market trends.
+
+Key calculations include:
+
+- **Average price:** Mean recorded property price over the selected period.
+- **Median price:** Middle observed property price.
+- **Monthly percentage change:** Recorded month-on-month percentage movement.
+- **Yearly percentage change:** Aggregated annual movement calculated from the monthly observations.
+- **Regional growth:** Percentage difference between the first and last available observations in the selected period.
+- **Regional ranking:** Comparison of regional growth across available property types.
+
+Missing observations are excluded where necessary from relevant calculations.
+
+## Important Interpretation Note
+
+This dashboard is designed for descriptive and exploratory analysis.
+
+Observed relationships, regional differences and historical trends do not establish causation. Correlation does not imply causation, and changes in average house prices should not be interpreted as proof that any particular economic, demographic or policy factor caused those changes.
+
+Average prices can also be affected by the mix of properties sold during a given period, so they should not be interpreted as direct measures of the changing value of an identical property.
+
+## Deployment
+
+The dashboard is deployed using **shinyapps.io**.
+
+Live application:
+
+https://ben-lopez.shinyapps.io/UK-House-Price-Analysis-Dashboard/
+
+## Future Improvements
+
+Potential extensions include:
+
+- Interactive geographical maps of regional house prices.
+- Inflation-adjusted house price comparisons.
+- Affordability analysis using income data.
+- Comparison with mortgage interest rates.
+- Housing market volatility analysis.
+- Forecasting and time-series modelling.
+- Additional local authority and regional comparisons.
+
+## Author
+
+Developed as an interactive data analysis project exploring UK residential property prices, with a focus on Newcastle upon Tyne.
+
+## Licence
+
+Specify your chosen licence before distributing or reusing this project. If you intend to use an open-source licence, consider the MIT Licence for your original code, while checking the terms applicable to the underlying HM Land Registry data.
